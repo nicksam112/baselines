@@ -5,6 +5,13 @@ from gym import spaces
 import cv2
 cv2.ocl.setUseOpenCL(False)
 
+#my imports
+from hashlib import sha1
+from keras.models import load_model
+import scipy
+
+useRegion = False
+
 class NoopResetEnv(gym.Wrapper):
     def __init__(self, env, noop_max=30):
         """Sample initial states by taking random number of no-ops on reset.
@@ -133,15 +140,26 @@ class WarpFrame(gym.ObservationWrapper):
     def __init__(self, env):
         """Warp frames to 84x84 as done in the Nature paper and later work."""
         gym.ObservationWrapper.__init__(self, env)
-        self.width = 84
-        self.height = 84
-        self.observation_space = spaces.Box(low=0, high=255,
-            shape=(self.height, self.width, 1), dtype=np.uint8)
+        if useRegion:
+            self.width = 160
+            self.height = 160
+            self.observation_space = spaces.Box(low=-5., high=5.,
+                shape=(20, 20, 6), dtype=np.float16)
+        else:
+            self.width = 84
+            self.height = 84
+            self.observation_space = spaces.Box(low=0, high=255,
+                shape=(self.height, self.width, 1), dtype=np.uint8)
 
     def observation(self, frame):
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
-        return frame[:, :, None]
+        if useRegion:
+            #frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
+            return frame#[:, :, None]
+        else:
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
+            return frame[:, :, None]
 
 class FrameStack(gym.Wrapper):
     def __init__(self, env, k):
@@ -157,7 +175,11 @@ class FrameStack(gym.Wrapper):
         self.k = k
         self.frames = deque([], maxlen=k)
         shp = env.observation_space.shape
-        self.observation_space = spaces.Box(low=0, high=255, shape=(shp[0], shp[1], shp[2] * k), dtype=np.uint8)
+        if useRegion:
+            self.observation_space = spaces.Box(low=-5., high=5., shape=(shp[0], shp[1], shp[2] * k), dtype=np.float16)
+        else:
+            self.observation_space = spaces.Box(low=0, high=255, shape=(shp[0], shp[1], shp[2] * k), dtype=np.uint8)
+
 
     def reset(self):
         ob = self.env.reset()
@@ -181,7 +203,10 @@ class ScaledFloatFrame(gym.ObservationWrapper):
     def observation(self, observation):
         # careful! This undoes the memory optimization, use
         # with smaller replay buffers only.
-        return np.array(observation).astype(np.float32) / 255.0
+        if useRegion:
+            return np.array(observation).astype(np.float32)# / 255.0
+        else:
+            return np.array(observation).astype(np.float32) / 255.0
 
 class LazyFrames(object):
     def __init__(self, frames):
@@ -213,6 +238,86 @@ class LazyFrames(object):
     def __getitem__(self, i):
         return self._force()[i]
 
+class regionalEncode(gym.ObservationWrapper):
+    def __init__(self, env):
+        gym.ObservationWrapper.__init__(self, env)
+        #this encoder is a keras model that takes in an 8x8x3 image and returns 2 autoencoder values
+        #we train one per game typically
+        #this is the most recent iteration for the SeaQuest game
+        self.encoder = load_model('var_encoder_sea3.h5')
+        self.width = 160.0
+        self.height = 160.0
+        self.hashTable = {}
+        self.gridSize = 20
+
+    def observation(self, obv):
+        #shortcut to get the background color
+        #would advise better method but this is incredibly efficient and works in most games/states
+        col = obv[100][0]
+        #zero out background
+        obv[np.where((obv==col).all(axis=2))] = [0,0,0]
+        #get boxes -> grid output
+        obv = self.boxToOutput(self.getBoxes(obv),obv)
+        #numpy print options, ignore
+        #np.set_printoptions(precision=3, threshold=np.nan, suppress=True)
+        return obv    
+    
+    #Detects all objects and returns list of boxes 
+    def getBoxes(self, obv):
+        #blur to aid in detecting solid objects
+        obv = cv2.blur(obv,(3,3))
+        #convert to HSV
+        obv2 = cv2.cvtColor(obv, cv2.COLOR_BGR2HSV)
+
+        #Get just values from HSV, cut out bottom
+        #Bottom pixels are a solid block in most games, aids in detection
+        obv3 = obv2[:,:,2]
+        obv3 = obv3[:-13]
+
+        #get all the contours with opencv
+        im2, contours, hierarchy = cv2.findContours(np.array(obv3) ,cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        #go through results and convert from x,y,w,h to x1,y2,x2,y2
+        results = []
+        for contour in contours:
+            (x,y,w,h) = cv2.boundingRect(contour)
+            results.append((x,y,w+x,h+y))
+            #for debugging
+            #cv2.rectangle(obv, (x,y), (x+w,y+h), (255, 0, 0), 2)
+        return results
+
+    #takes a list of boxes and the image, encodes them with the autoencoder, and puts into the grid
+    # grid size: height x width x encoded
+    # encoded: x1, y1, x2, y2, autoencode value 1, autoencode value 2
+    def boxToOutput(self, boxes, image):
+        result = np.zeros((self.gridSize,self.gridSize,6))
+
+        for i in boxes:
+            dims = i
+            #grab section of image for autoencoding, resize to proper size
+            imagetest = image[dims[1]:dims[3],dims[0]:dims[2],:]
+            grid = int((dims[0]+dims[2])/(2. * 8)), int((dims[1]+dims[3])/(2. * 8))
+            center = ((dims[0]+dims[2])/(2. * 8))-grid[0], ((dims[1]+dims[3])/(2. * 8))-grid[1]
+            img_in = np.expand_dims(scipy.misc.imresize(imagetest, (16,16)), axis=0)/255.
+            #print(grid)
+
+            #pixels to percent of image size
+            imgsize = (dims[2]-dims[0])/(self.width*1.),(dims[3]-dims[1])/(self.height*1.)
+
+            #hash the image, if it's been encoded before grab the value
+            #if it's new, encode it and store values
+            hash = sha1(img_in).hexdigest()
+            if hash in self.hashTable:
+                vals = self.hashTable[hash]
+            else:
+                vals = self.encoder.predict(img_in)[0]
+                self.hashTable[hash] = vals
+            
+            #add it to the grid
+            entry = np.append(center, np.append(imgsize, vals))
+            result[grid[0]][grid[1]] = entry
+        
+        return result
+
 def make_atari(env_id):
     env = gym.make(env_id)
     assert 'NoFrameskip' in env.spec.id
@@ -228,6 +333,8 @@ def wrap_deepmind(env, episode_life=True, clip_rewards=True, frame_stack=False, 
     if 'FIRE' in env.unwrapped.get_action_meanings():
         env = FireResetEnv(env)
     env = WarpFrame(env)
+    if useRegion:
+        env = regionalEncode(env)
     if scale:
         env = ScaledFloatFrame(env)
     if clip_rewards:
