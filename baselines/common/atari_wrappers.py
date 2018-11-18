@@ -244,6 +244,7 @@ class regionalEncode(gym.ObservationWrapper):
         #this encoder is a keras model that takes in an 8x8x3 image and returns 2 autoencoder values
         #we train one per game typically
         #this is the most recent iteration for the SeaQuest game
+        #Unfortunately these weights were deleted due to limited space, working on recreating the files
         self.encoder = load_model('var_encoder_sea3.h5')
         self.width = 160.0
         self.height = 160.0

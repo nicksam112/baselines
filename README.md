@@ -6,7 +6,7 @@ This fork of OpenAI Baselines is modified to include an implementation of Nichol
 
 [Slides](https://docs.google.com/presentation/d/140BnuztjXdWlSPe8wHoPKsaLIMEI2QoChnVOQfIWVT4/edit?usp=sharing)
 
-This was implemented with OpenAI's baselines project in order to provide a standardized approach to testing the preprocessing effectiveness. Not included with this though is the code to create the actual autoencoder that is loaded in as part of the methodology. Any network that takes in an 8 x 8 image and outputs 2 autoencoded values should generally work fine, we specifically used a VAE. 
+This was implemented with OpenAI's baselines project in order to provide a standardized approach to testing the preprocessing effectiveness. Not included with this though is the code to create the actual autoencoder that is loaded in as part of the methodology. Currently this project cannot be run "as-is" since it requires a trained autoencoder to encode the sprite values, the weight files of which were deleted. If you wish to use this before it's updated with demo weight files, any network that takes in an 8 x 8 image and outputs 2 autoencoded values should generally work fine, we specifically used a VAE. 
 
 Below is the original description for this project.
 <!--
